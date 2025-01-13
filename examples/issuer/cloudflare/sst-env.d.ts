@@ -2,16 +2,8 @@
 /* tslint:disable */
 /* eslint-disable */
 /* deno-fmt-ignore-file */
+
+/// <reference path="../../../../../sst-env.d.ts" />
+
 import "sst"
 export {}
-declare module "sst" {
-  export interface Resource {
-    CloudflareAuth: {
-      type: "sst.cloudflare.Worker"
-      url: string
-    }
-    CloudflareAuthKV: {
-      type: "sst.cloudflare.Kv"
-    }
-  }
-}

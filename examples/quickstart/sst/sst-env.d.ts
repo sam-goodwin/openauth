@@ -2,17 +2,8 @@
 /* tslint:disable */
 /* eslint-disable */
 /* deno-fmt-ignore-file */
+
+/// <reference path="../../../../../sst-env.d.ts" />
+
 import "sst"
 export {}
-declare module "sst" {
-  export interface Resource {
-    MyAuth: {
-      type: "sst.aws.Auth"
-      url: string
-    }
-    MyWeb: {
-      type: "sst.aws.Nextjs"
-      url: string
-    }
-  }
-}
