@@ -1,7 +1,10 @@
 import type { Context } from "hono";
 import { handle as awsHandle } from "hono/aws-lambda";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { cors } from "hono/cors";
 import { Hono } from "hono/tiny";
+import { CompactEncrypt, SignJWT, compactDecrypt, jwtVerify } from "jose";
+import { ScryptHasher } from "./provider/password.js";
 /**
  * The `issuer` create an OpentAuth server, a [Hono](https://hono.dev) app that's
  * designed to run anywhere.
@@ -184,8 +187,6 @@ export type Prettify<T> = {
   [K in keyof T]: T[K];
 } & {};
 
-import { cors } from "hono/cors";
-import { CompactEncrypt, SignJWT, compactDecrypt } from "jose";
 import {
   MissingParameterError,
   OauthError,
@@ -466,6 +467,9 @@ export function issuer<
     setTheme(input.theme);
   }
 
+  // Initialize a single ScryptHasher instance for all client secret hashing
+  const hasher = ScryptHasher();
+
   const select = input.select ?? Select();
   const allow =
     input.allow ??
@@ -655,6 +659,8 @@ export function issuer<
     },
     opts?: {
       generateRefreshToken?: boolean;
+      // If scope includes 'openid', generate and include an ID token
+      generateIDToken?: boolean;
     },
   ) {
     const refreshToken = value.nextToken ?? crypto.randomUUID();
@@ -677,13 +683,16 @@ export function issuer<
         value.ttl.refresh,
       );
     }
+
+    const iss = issuer(ctx);
+
     return {
       access: await new SignJWT({
         mode: "access",
         type: value.type,
         properties: value.properties,
         aud: value.clientID,
-        iss: issuer(ctx),
+        iss,
         sub: value.subject,
       })
         .setExpirationTime(
@@ -698,6 +707,26 @@ export function issuer<
         )
         .sign(await signingKey.then((item) => item.private)),
       refresh: [value.subject, refreshToken].join(":"),
+      id: opts?.generateIDToken
+        ? await new SignJWT({
+            // Standard claims
+            iss,
+            sub: value.subject,
+            aud: value.clientID,
+            // Additional claims from the user's properties
+            ...value.properties,
+          })
+            .setExpirationTime(Math.floor(Date.now() / 1000 + value.ttl.access))
+            .setIssuedAt()
+            .setProtectedHeader(
+              await signingKey.then((k) => ({
+                alg: k.alg,
+                kid: k.id,
+                typ: "JWT",
+              })),
+            )
+            .sign(await signingKey.then((item) => item.private))
+        : undefined,
     };
   }
 
@@ -758,6 +787,84 @@ export function issuer<
     },
   );
 
+  // OpenID Connect Discovery 1.0
+  // This endpoint provides configuration information about the OpenID Connect provider
+  app.get(
+    "/.well-known/openid-configuration",
+    cors({
+      origin: "*",
+      allowHeaders: ["*"],
+      allowMethods: ["GET"],
+      credentials: false,
+    }),
+    async (c) => {
+      const iss = issuer(c);
+      return c.json({
+        // REQUIRED. URL using the https scheme with no query or fragment component that the OP asserts as its Issuer Identifier
+        issuer: iss,
+        // REQUIRED. URL of the OP's OAuth 2.0 Authorization Endpoint
+        authorization_endpoint: `${iss}/authorize`,
+        // REQUIRED. URL of the OP's OAuth 2.0 Token Endpoint
+        token_endpoint: `${iss}/token`,
+        // RECOMMENDED. URL of the OP's JSON Web Key Set document
+        jwks_uri: `${iss}/.well-known/jwks.json`,
+        // RECOMMENDED. JSON array containing a list of the OAuth 2.0 scope values that this server supports
+        scopes_supported: [
+          "openid",
+          "offline_access",
+          // TODO(sam): do we need these?
+          // "email",
+          // "groups",
+          // "profile",
+        ],
+        // REQUIRED. JSON array containing a list of the OAuth 2.0 response_type values that this OP supports
+        response_types_supported: ["code", "token"],
+        // REQUIRED. JSON array containing a list of the Subject Identifier types that this OP supports
+        subject_types_supported: [
+          "public",
+          // TODO(sam): support pairwise?
+        ],
+        // REQUIRED. JSON array containing a list of the JWS signing algorithms supported by the OP for the ID Token
+        id_token_signing_alg_values_supported: ["ES256"],
+        // REQUIRED. JSON array containing a list of Client Authentication methods supported by this Token Endpoint
+        token_endpoint_auth_methods_supported: [
+          "client_secret_basic",
+          "client_secret_post",
+          // TODO(sam): support private_key_jwt and client_secret_jwt
+          // private_key_jwt
+          // client_secret_jwt
+        ],
+        // RECOMMENDED. JSON array containing a list of the Claim Names of the Claims that the OpenID Provider MAY be able to supply values for
+        claims_supported: [
+          "sub",
+          "iss",
+          "aud",
+          "exp",
+          "iat",
+          // TODO(sam): do we need these?
+          // "email",
+          // "email_verified",
+          // "locale",
+          // "name",
+          // "preferred_username",
+          // "at_hash",
+        ],
+        // OPTIONAL. URL of the authorization server's OAuth 2.0 Dynamic Client Registration endpoint
+        registration_endpoint: `${iss}/register`,
+        // OPTIONAL. JSON array containing a list of the OAuth 2.0 Grant Type values that this OP supports
+        grant_types_supported: [
+          "authorization_code",
+          "refresh_token",
+          // TODO(sam): support device_code and token_exchange
+          // "urn:ietf:params:oauth:grant-type:device_code",
+          // "urn:ietf:params:oauth:grant-type:token-exchange",
+        ],
+        // OPTIONAL. URL of the OP's UserInfo Endpoint
+        userinfo_endpoint: `${iss}/userinfo`,
+      });
+    },
+  );
+
   app.get(
     "/.well-known/oauth-authorization-server",
     cors({
@@ -790,6 +897,68 @@ export function issuer<
       const form = await c.req.formData();
       const grantType = form.get("grant_type");
 
+      // Get client credentials from either Authorization header (Basic auth) or form body
+      let clientID: string | undefined;
+      let clientSecret: string | undefined;
+
+      // Check Authorization header for Basic auth
+      const authHeader = c.req.header("Authorization");
+      if (authHeader?.startsWith("Basic ")) {
+        try {
+          const credentials = Buffer.from(
+            authHeader.slice(6),
+            "base64",
+          ).toString();
+          const [id, secret] = credentials.split(":");
+          if (id && secret) {
+            clientID = id;
+            clientSecret = secret;
+          }
+        } catch (err) {
+          return c.json(
+            {
+              error: "invalid_client",
+              error_description: "Invalid Authorization header format",
+            },
+            401,
+          );
+        }
+      } else {
+        // Fallback to form parameters (client_secret_post)
+        clientID = form.get("client_id")?.toString();
+        clientSecret = form.get("client_secret")?.toString();
+      }
+
+      // Verify client credentials if provided
+      if (clientID && clientSecret) {
+        const client = await Storage.get<{
+          client_id: string;
+          client_secret: any;
+        }>(storage, ["oauth:client", clientID]);
+
+        if (!client) {
+          return c.json(
+            {
+              error: "invalid_client",
+              error_description: "Unknown client",
+            },
+            401,
+          );
+        }
+
+        // Verify client secret using the shared hasher instance
+        const isValid = await hasher.verify(clientSecret, client.client_secret);
+        if (!isValid) {
+          return c.json(
+            {
+              error: "invalid_client",
+              error_description: "Invalid client credentials",
+            },
+            401,
+          );
+        }
+      }
+
       if (grantType === "authorization_code") {
         const code = form.get("code");
         if (!code)
@@ -812,6 +981,7 @@ export function issuer<
             refresh: number;
           };
           pkce?: AuthorizationState["pkce"];
+          scope?: string;
         }>(storage, key);
         if (!payload) {
           return c.json(
@@ -870,11 +1040,18 @@ export function issuer<
             );
           }
         }
-        const tokens = await generateTokens(c, payload);
-        return c.json({
+        const tokens = await generateTokens(c, payload, {
+          // If scope includes 'openid', generate and include an ID token
+          generateIDToken: payload.scope?.includes("openid"),
+        });
+        const response: any = {
           access_token: tokens.access,
           refresh_token: tokens.refresh,
-        });
+          token_type: "Bearer",
+          expires_in: payload.ttl.access,
+        };
+
+        return c.json(response);
       }
 
       if (grantType === "refresh_token") {
@@ -1030,11 +1207,11 @@ export function issuer<
       }
 
       // Generate client credentials
-      // The authorization server MUST issue a unique client identifier for
-      // each unique client registration request
       const clientID = crypto.randomUUID();
-      // TODO(sam): generate a longer, more secure client secret
-      const clientSecret = crypto.randomUUID();
+      const clientSecret = crypto.randomUUID() + crypto.randomUUID();
+
+      // Hash the client secret using the shared hasher instance
+      const hashedSecret = await hasher.hash(clientSecret);
 
       // Create client configuration with metadata
       // The authorization server MAY include default values for any registered
@@ -1042,8 +1219,8 @@ export function issuer<
       const client = {
         // REQUIRED. Unique client identifier.
         client_id: clientID,
-        // OPTIONAL. Client secret. Required for confidential clients.
-        client_secret: clientSecret,
+        // OPTIONAL. Hashed client secret. Required for confidential clients.
+        client_secret: hashedSecret,
         // OPTIONAL. Human-readable name of the client.
         client_name: body.client_name || clientID,
         // REQUIRED for authorization code and implicit grants.
@@ -1052,7 +1229,7 @@ export function issuer<
         grant_types: body.grant_types || ["authorization_code"],
         // OPTIONAL. Authentication method for the token endpoint.
         token_endpoint_auth_method:
-          body.token_endpoint_auth_method || "client_secret_basic",
+          body.token_endpoint_auth_method || "client_secret_post",
         // OPTIONAL. Space-separated string of OAuth 2.0 scope values.
         scope: body.scope || "openid",
         // OPTIONAL. Time at which the client was registered.
@@ -1063,8 +1240,12 @@ export function issuer<
       await Storage.set(storage, ["oauth:client", clientID], client);
 
       // The authorization server's response MUST include the client identifier,
-      // and MAY include additional metadata fields registered by the client
-      return c.json(client);
+      // and MAY include additional metadata fields registered by the client.
+      // Return the plain client_secret only in the response, not in storage.
+      return c.json({
+        ...client,
+        client_secret: clientSecret,
+      });
     },
   );
 
@@ -1189,6 +1370,80 @@ export function issuer<
     url.searchParams.set("error_description", oauth.description);
     return c.redirect(url.toString());
   });
+
+  app.get(
+    "/userinfo",
+    cors({
+      origin: "*",
+      allowHeaders: ["*", "Authorization"],
+      allowMethods: ["GET"],
+      credentials: false,
+    }),
+    async (c) => {
+      // Get the access token from the Authorization header
+      const authHeader = c.req.header("Authorization");
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return c.json(
+          {
+            error: "invalid_token",
+            error_description: "Missing or invalid Authorization header",
+          },
+          401,
+        );
+      }
+
+      const accessToken = authHeader.substring(7); // Remove "Bearer " prefix
+
+      try {
+        // Verify the access token using all available signing keys
+        const keys = await allSigning;
+        let payload;
+
+        for (const key of keys) {
+          try {
+            const { payload: decoded } = await jwtVerify(
+              accessToken,
+              key.private,
+              {
+                issuer: issuer(c),
+              },
+            );
+            payload = decoded as {
+              sub: string;
+              properties: Record<string, any>;
+            };
+            break;
+          } catch (err) {
+            continue; // Try next key if verification fails
+          }
+        }
+
+        if (!payload) {
+          return c.json(
+            {
+              error: "invalid_token",
+              error_description: "Invalid access token",
+            },
+            401,
+          );
+        }
+
+        // Return standard claims and user properties as claims
+        return c.json({
+          sub: payload.sub,
+          ...(payload.properties || {}),
+        });
+      } catch (err) {
+        return c.json(
+          {
+            error: "invalid_token",
+            error_description: "Invalid access token",
+          },
+          401,
+        );
+      }
+    },
+  );
 
   return app;
 }
