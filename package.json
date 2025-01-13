@@ -2,11 +2,7 @@
   "name": "openauthjs",
   "module": "index.ts",
   "type": "module",
-  "workspaces": [
-    "packages/openauth",
-    "examples/issuer/*",
-    "examples/client/*"
-  ],
+  "workspaces": ["packages/openauth", "examples/issuer/*", "examples/client/*"],
   "scripts": {
     "release": "bun run --filter=\"@openauthjs/openauth\" build && changeset publish"
   },

@@ -522,16 +522,23 @@ export function issuer<
             );
             if (authorization.response_type === "token") {
               const location = new URL(authorization.redirect_uri);
-              const tokens = await generateTokens(ctx, {
-                subject,
-                type: type as string,
-                properties,
-                clientID: authorization.client_id,
-                ttl: {
-                  access: subjectOpts?.ttl?.access ?? ttlAccess,
-                  refresh: subjectOpts?.ttl?.refresh ?? ttlRefresh,
+              const tokens = await generateTokens(
+                ctx,
+                {
+                  subject,
+                  type: type as string,
+                  properties,
+                  clientID: authorization.client_id,
+                  ttl: {
+                    access: subjectOpts?.ttl?.access ?? ttlAccess,
+                    refresh: subjectOpts?.ttl?.refresh ?? ttlRefresh,
+                  },
                 },
-              });
+                {
+                  // TODO(sam): should we generate an ID token here?
+                  // generateIDToken: ??
+                },
+              );
               location.hash = new URLSearchParams({
                 access_token: tokens.access,
                 refresh_token: tokens.refresh,
@@ -707,7 +714,7 @@ export function issuer<
         )
         .sign(await signingKey.then((item) => item.private)),
       refresh: [value.subject, refreshToken].join(":"),
-      id: opts?.generateIDToken
+      id_token: opts?.generateIDToken
         ? await new SignJWT({
             // Standard claims
             iss,
@@ -825,7 +832,11 @@ export function issuer<
           // TODO(sam): support pairwise?
         ],
         // REQUIRED. JSON array containing a list of the JWS signing algorithms supported by the OP for the ID Token
-        id_token_signing_alg_values_supported: ["ES256"],
+        id_token_signing_alg_values_supported: [
+          "ES256",
+          // TODO(sam): support RS256? can flyte use ES256?
+          // "RS256",
+        ],
         // REQUIRED. JSON array containing a list of Client Authentication methods supported by this Token Endpoint
         token_endpoint_auth_methods_supported: [
           "client_secret_basic",
@@ -1049,6 +1060,7 @@ export function issuer<
           refresh_token: tokens.refresh,
           token_type: "Bearer",
           expires_in: payload.ttl.access,
+          id_token: tokens.id_token,
         };
 
         return c.json(response);
@@ -1079,6 +1091,7 @@ export function issuer<
           };
           nextToken: string;
           timeUsed?: number;
+          scope?: string;
         }>(storage, key);
         if (!payload) {
           return c.json(
@@ -1114,6 +1127,8 @@ export function issuer<
         }
         const tokens = await generateTokens(c, payload, {
           generateRefreshToken,
+          // TODO(sam): should we generate an ID token for refresh tokens?
+          // generateIDToken: payload.scope?.includes("openid"),
         });
         return c.json({
           access_token: tokens.access,
