@@ -187,6 +187,7 @@ export type Prettify<T> = {
   [K in keyof T]: T[K];
 } & {};
 
+import type { OidcClient } from "./client.js";
 import {
   MissingParameterError,
   OauthError,
@@ -1225,9 +1226,6 @@ export function issuer<
       const clientID = crypto.randomUUID();
       const clientSecret = crypto.randomUUID() + crypto.randomUUID();
 
-      // Hash the client secret using the shared hasher instance
-      const hashedSecret = await hasher.hash(clientSecret);
-
       // Create client configuration with metadata
       // The authorization server MAY include default values for any registered
       // metadata values used by the client that the client omits
@@ -1235,7 +1233,7 @@ export function issuer<
         // REQUIRED. Unique client identifier.
         client_id: clientID,
         // OPTIONAL. Hashed client secret. Required for confidential clients.
-        client_secret: hashedSecret,
+        client_secret: clientSecret,
         // OPTIONAL. Human-readable name of the client.
         client_name: body.client_name || clientID,
         // REQUIRED for authorization code and implicit grants.
@@ -1249,7 +1247,7 @@ export function issuer<
         scope: body.scope || "openid",
         // OPTIONAL. Time at which the client was registered.
         created_at: Math.floor(Date.now() / 1000),
-      };
+      } satisfies OidcClient;
 
       // The authorization server stores the client metadata in a persistent storage
       await Storage.set(storage, ["oauth:client", clientID], client);
