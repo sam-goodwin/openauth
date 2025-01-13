@@ -909,69 +909,72 @@ export function issuer<
       const form = await c.req.formData();
       const grantType = form.get("grant_type");
 
-      // Get client credentials from either Authorization header (Basic auth) or form body
-      let clientID: string | undefined;
-      let clientSecret: string | undefined;
-
-      // Check Authorization header for Basic auth
-      const authHeader = c.req.header("Authorization");
-      if (authHeader?.startsWith("Basic ")) {
-        try {
-          const credentials = Buffer.from(
-            authHeader.slice(6),
-            "base64",
-          ).toString();
-          const [id, secret] = credentials.split(":");
-          if (id && secret) {
-            clientID = id;
-            clientSecret = secret;
-          }
-        } catch (err) {
-          return c.json(
-            {
-              error: "invalid_client",
-              error_description: "Invalid Authorization header format",
-            },
-            401,
-          );
-        }
-      } else {
-        // Fallback to form parameters (client_secret_post)
-        clientID = form.get("client_id")?.toString();
-        clientSecret = form.get("client_secret")?.toString();
-      }
-
-      // Verify client credentials if provided
-      if (clientID && clientSecret) {
-        const client = await Storage.get<{
-          client_id: string;
-          client_secret: any;
-        }>(storage, ["oauth:client", clientID]);
-
-        if (!client) {
-          return c.json(
-            {
-              error: "invalid_client",
-              error_description: "Unknown client",
-            },
-            401,
-          );
-        }
-
-        // Verify client secret using the shared hasher instance
-        const isValid = await hasher.verify(clientSecret, client.client_secret);
-        if (!isValid) {
-          return c.json(
-            {
-              error: "invalid_client",
-              error_description: "Invalid client credentials",
-            },
-            401,
-          );
-        }
-      }
-
       if (grantType === "authorization_code") {
+        // Get client credentials from either Authorization header (Basic auth) or form body
+        let clientID: string | undefined;
+        let clientSecret: string | undefined;
+
+        // Check Authorization header for Basic auth
+        const authHeader = c.req.header("Authorization");
+        if (authHeader?.startsWith("Basic ")) {
+          try {
+            const credentials = Buffer.from(
+              authHeader.slice(6),
+              "base64",
+            ).toString();
+            const [id, secret] = credentials.split(":");
+            if (id && secret) {
+              clientID = id;
+              clientSecret = secret;
+            }
+          } catch (err) {
+            return c.json(
+              {
+                error: "invalid_client",
+                error_description: "Invalid Authorization header format",
+              },
+              401,
+            );
+          }
+        } else {
+          // Fallback to form parameters (client_secret_post)
+          clientID = form.get("client_id")?.toString();
+          clientSecret = form.get("client_secret")?.toString();
+        }
+        // Verify client credentials if provided
+        if (clientID && clientSecret) {
+          // if both of these exist, we are assuming this is an OIDC client
+          const client = await Storage.get<{
+            client_id: string;
+            client_secret: any;
+          }>(storage, ["oauth:client", clientID]);
+
+          if (!client) {
+            return c.json(
+              {
+                error: "invalid_client",
+                error_description: "Unknown client",
+              },
+              401,
+            );
+          }
+
+          // Verify client secret using the shared hasher instance
+          const isValid = await hasher.verify(
+            clientSecret,
+            client.client_secret,
+          );
+          if (!isValid) {
+            return c.json(
+              {
+                error: "invalid_client",
+                error_description: "Invalid client credentials",
+              },
+              401,
+            );
+          }
+        }
+
         const code = form.get("code");
         if (!code)
           return c.json(
