@@ -53,6 +53,7 @@ import {
   InvalidSubjectError,
 } from "./error.js";
 import { generatePKCE } from "./pkce.js";
+import type { ScryptHash } from "./provider/password.js";
 import type { SubjectSchema } from "./subject.js";
 
 /**
@@ -335,11 +336,12 @@ export interface VerifyError {
   err: InvalidRefreshTokenError | InvalidAccessTokenError;
 }
 
+// data stored in the database
 export interface OidcClient {
   // REQUIRED. Unique client identifier.
   client_id: string;
   // OPTIONAL. Hashed client secret. Required for confidential clients.
-  client_secret: string;
+  client_secret: ScryptHash;
   // OPTIONAL. Human-readable name of the client.
   client_name: string;
   // REQUIRED for authorization code and implicit grants.

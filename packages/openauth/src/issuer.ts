@@ -174,6 +174,7 @@ export interface AuthorizationState {
   state: string;
   client_id: string;
   audience?: string;
+  scope?: string;
   pkce?: {
     challenge: string;
     method: "S256";
@@ -560,12 +561,13 @@ export function issuer<
                   redirectURI: authorization.redirect_uri,
                   clientID: authorization.client_id,
                   pkce: authorization.pkce,
+                  scope: authorization.scope,
                   ttl: {
                     access: subjectOpts?.ttl?.access ?? ttlAccess,
                     refresh: subjectOpts?.ttl?.refresh ?? ttlRefresh,
                   },
                 },
-                60,
+                60, // Store code for 1 minute
               );
               const location = new URL(authorization.redirect_uri);
               location.searchParams.set("code", code);
@@ -1227,7 +1229,8 @@ export function issuer<
 
       // Generate client credentials
       const clientID = crypto.randomUUID();
-      const clientSecret = crypto.randomUUID() + crypto.randomUUID();
+      const rawClientSecret = crypto.randomUUID() + crypto.randomUUID();
+      const hashedClientSecret = await hasher.hash(rawClientSecret);
 
       // Create client configuration with metadata
       // The authorization server MAY include default values for any registered
@@ -1236,7 +1239,7 @@ export function issuer<
         // REQUIRED. Unique client identifier.
         client_id: clientID,
         // OPTIONAL. Hashed client secret. Required for confidential clients.
-        client_secret: clientSecret,
+        client_secret: hashedClientSecret,
         // OPTIONAL. Human-readable name of the client.
         client_name: body.client_name || clientID,
         // REQUIRED for authorization code and implicit grants.
@@ -1253,14 +1256,20 @@ export function issuer<
       } satisfies OidcClient;
 
       // The authorization server stores the client metadata in a persistent storage
-      await Storage.set(storage, ["oauth:client", clientID], client);
+      await Storage.set(
+        storage,
+        ["oauth:client", clientID],
+        client,
+        // TODO(sam): should this follow the same ttl as the access token? or have its own?
+        60 * 60 * 24, // Store for 24 hours
+      );
 
       // The authorization server's response MUST include the client identifier,
       // and MAY include additional metadata fields registered by the client.
       // Return the plain client_secret only in the response, not in storage.
       return c.json({
         ...client,
-        client_secret: clientSecret,
+        client_secret: rawClientSecret,
       });
     },
   );
@@ -1282,6 +1291,7 @@ export function issuer<
       state,
       client_id,
       audience,
+      scope,
       pkce:
         code_challenge && code_challenge_method
           ? {
@@ -1419,14 +1429,16 @@ export function issuer<
           try {
             const { payload: decoded } = await jwtVerify(
               accessToken,
-              key.private,
+              key.public,
               {
                 issuer: issuer(c),
               },
             );
             payload = decoded as {
-              sub: string;
+              mode: string;
+              type: string;
               properties: Record<string, any>;
+              sub: string;
             };
             break;
           } catch (err) {
@@ -1434,7 +1446,7 @@ export function issuer<
           }
         }
 
-        if (!payload) {
+        if (!payload || payload.mode !== "access") {
           return c.json(
             {
               error: "invalid_token",
@@ -1447,7 +1459,7 @@ export function issuer<
         // Return standard claims and user properties as claims
         return c.json({
           sub: payload.sub,
-          ...(payload.properties || {}),
+          ...payload.properties,
         });
       } catch (err) {
         return c.json(
