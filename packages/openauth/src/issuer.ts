@@ -999,6 +999,75 @@ export function issuer<
     },
   );
 
+  // OAuth 2.0 Dynamic Client Registration Protocol (RFC 7591)
+  // This endpoint allows OAuth 2.0 clients to register with the authorization server,
+  // providing client metadata parameters and receiving client credentials.
+  app.post(
+    "/register",
+    cors({
+      origin: "*",
+      allowHeaders: ["*"],
+      allowMethods: ["POST"],
+      credentials: false,
+    }),
+    async (c) => {
+      const body = await c.req.json();
+
+      // redirect_uris is REQUIRED for clients using the authorization code grant type
+      // or implicit grant type. This array MUST contain at least one redirect URI.
+      if (
+        !body.redirect_uris ||
+        !Array.isArray(body.redirect_uris) ||
+        body.redirect_uris.length === 0
+      ) {
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "redirect_uris must be a non-empty array",
+          },
+          400,
+        );
+      }
+
+      // Generate client credentials
+      // The authorization server MUST issue a unique client identifier for
+      // each unique client registration request
+      const clientID = crypto.randomUUID();
+      // TODO(sam): generate a longer, more secure client secret
+      const clientSecret = crypto.randomUUID();
+
+      // Create client configuration with metadata
+      // The authorization server MAY include default values for any registered
+      // metadata values used by the client that the client omits
+      const client = {
+        // REQUIRED. Unique client identifier.
+        client_id: clientID,
+        // OPTIONAL. Client secret. Required for confidential clients.
+        client_secret: clientSecret,
+        // OPTIONAL. Human-readable name of the client.
+        client_name: body.client_name || clientID,
+        // REQUIRED for authorization code and implicit grants.
+        redirect_uris: body.redirect_uris,
+        // OPTIONAL. Array of OAuth 2.0 grant types supported by the client.
+        grant_types: body.grant_types || ["authorization_code"],
+        // OPTIONAL. Authentication method for the token endpoint.
+        token_endpoint_auth_method:
+          body.token_endpoint_auth_method || "client_secret_basic",
+        // OPTIONAL. Space-separated string of OAuth 2.0 scope values.
+        scope: body.scope || "openid",
+        // OPTIONAL. Time at which the client was registered.
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      // The authorization server stores the client metadata in a persistent storage
+      await Storage.set(storage, ["oauth:client", clientID], client);
+
+      // The authorization server's response MUST include the client identifier,
+      // and MAY include additional metadata fields registered by the client
+      return c.json(client);
+    },
+  );
+
   app.get("/authorize", async (c) => {
     const provider = c.req.query("provider");
     const response_type = c.req.query("response_type");
@@ -1008,6 +1077,8 @@ export function issuer<
     const audience = c.req.query("audience");
     const code_challenge = c.req.query("code_challenge");
     const code_challenge_method = c.req.query("code_challenge_method");
+    const scope = c.req.query("scope");
+
     const authorization: AuthorizationState = {
       response_type,
       redirect_uri,
@@ -1036,6 +1107,39 @@ export function issuer<
       throw new MissingParameterError("client_id");
     }
 
+    // When 'openid' scope is requested, this indicates an OpenID Connect authentication request.
+    // The Authorization Server MUST verify that the client is registered to use the requested scope.
+    if (scope?.includes("openid")) {
+      const client = await Storage.get<{
+        client_id: string;
+        redirect_uris: string[];
+        scope: string;
+      }>(storage, ["oauth:client", client_id]);
+
+      // The authorization server MUST verify that a client exists with the provided client identifier
+      if (!client) {
+        throw new UnauthorizedClientError(client_id, redirect_uri);
+      }
+
+      // If the request fails due to a missing, invalid, or mismatching redirection URI,
+      // the authorization server SHOULD inform the resource owner of the error.
+      if (!client.redirect_uris.includes(redirect_uri)) {
+        throw new UnauthorizedClientError(client_id, redirect_uri);
+      }
+
+      // The Authorization Server MUST verify that the Client is authorized to use the requested scope
+      // values. 'openid' scope is REQUIRED for OpenID Connect Authentication requests.
+      if (!client.scope?.includes("openid")) {
+        return c.json(
+          {
+            error: "invalid_scope",
+            error_description: "Client is not authorized for openid scope",
+          },
+          400,
+        );
+      }
+    }
+
     if (input.start) {
       await input.start(c.req.raw);
     }
@@ -1051,6 +1155,7 @@ export function issuer<
       ))
     )
       throw new UnauthorizedClientError(client_id, redirect_uri);
+
     await auth.set(c, "authorization", 60 * 60 * 24, authorization);
     if (provider) return c.redirect(`/${provider}/authorize`);
     const providers = Object.keys(input.providers);
