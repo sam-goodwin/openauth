@@ -156,6 +156,390 @@ describe("Dynamic Client Registration", () => {
     const json = await response.json();
     expect(json.error).toBe("invalid_request");
   });
+
+  test("PUT /register updates client metadata", async () => {
+    // First register a client
+    const registerResponse = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Original Client Name",
+          redirect_uris: ["https://client.example.com/callback"],
+          scope: "openid offline_access",
+          grant_types: ["authorization_code"],
+        }),
+      },
+    );
+
+    expect(registerResponse.status).toBe(200);
+    const client = await registerResponse.json();
+
+    // Verify initial redirect_uris in storage
+    const initialStored = await storage.get(["oauth:client", client.client_id]);
+    expect(initialStored).toBeDefined();
+    if (!initialStored) throw new Error("Client not stored");
+    expect(initialStored.redirect_uris).toEqual([
+      "https://client.example.com/callback",
+    ]);
+
+    // Update client metadata with new redirect URIs
+    const updateBody = {
+      client_name: "Updated Client Name",
+      redirect_uris: [
+        "https://client.example.com/callback",
+        "https://client.example.com/new-callback",
+        "https://app.example.com/oauth/callback",
+      ],
+      grant_types: ["authorization_code", "refresh_token"],
+      scope: "openid offline_access profile",
+    };
+
+    const updateResponse = await auth.request(
+      `https://auth.example.com/register/${client.client_id}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(
+            `${client.client_id}:${client.client_secret}`,
+          ).toString("base64")}`,
+        },
+        body: JSON.stringify(updateBody),
+      },
+    );
+
+    expect(updateResponse.status).toBe(200);
+    const updatedClient = await updateResponse.json();
+
+    // Verify updated metadata in response
+    expect(updatedClient).toMatchObject({
+      client_id: client.client_id,
+      client_name: updateBody.client_name,
+      redirect_uris: updateBody.redirect_uris,
+      grant_types: updateBody.grant_types,
+      scope: updateBody.scope,
+    });
+
+    // Verify client_secret is not included in response
+    expect(updatedClient).not.toHaveProperty("client_secret");
+
+    // Verify updated redirect_uris in storage
+    const updatedStored = await storage.get(["oauth:client", client.client_id]);
+    expect(updatedStored).toBeDefined();
+    if (!updatedStored) throw new Error("Client not stored");
+    expect(updatedStored.redirect_uris).toEqual(updateBody.redirect_uris);
+
+    // Verify we can use one of the new redirect URIs in auth flow
+    const authResponse = await auth.request(
+      "https://auth.example.com/authorize?" +
+        new URLSearchParams({
+          response_type: "code",
+          client_id: client.client_id,
+          redirect_uri: "https://app.example.com/oauth/callback",
+          provider: "dummy",
+          scope: "openid",
+        }).toString(),
+    );
+    expect(authResponse.status).toBe(302);
+  });
+
+  test("PUT /register requires valid client_id", async () => {
+    const response = await auth.request(
+      "https://auth.example.com/register/non-existent-client",
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Updated Client",
+          redirect_uris: ["https://client.example.com/callback"],
+        }),
+      },
+    );
+
+    expect(response.status).toBe(404);
+    const error = await response.json();
+    expect(error.error).toBe("invalid_client");
+  });
+
+  test("PUT /register requires correct client credentials", async () => {
+    // Register first client
+    const client1Response = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Client 1",
+          redirect_uris: ["https://client1.example.com/callback"],
+          scope: "openid",
+        }),
+      },
+    );
+    const client1 = await client1Response.json();
+
+    // Register second client
+    const client2Response = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Client 2",
+          redirect_uris: ["https://client2.example.com/callback"],
+          scope: "openid",
+        }),
+      },
+    );
+    const client2 = await client2Response.json();
+
+    // Try to update client1 using client2's secret
+    const response = await auth.request(
+      `https://auth.example.com/register/${client1.client_id}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(
+            `${client1.client_id}:${client2.client_secret}`,
+          ).toString("base64")}`,
+        },
+        body: JSON.stringify({
+          client_name: "Updated Client",
+          redirect_uris: ["https://client1.example.com/callback"],
+        }),
+      },
+    );
+
+    expect(response.status).toBe(401);
+    const error = await response.json();
+    expect(error.error).toBe("invalid_client");
+    expect(error.error_description).toBe("Invalid client credentials");
+
+    // Also verify that using wrong client_id in auth header fails
+    const responseWithWrongId = await auth.request(
+      `https://auth.example.com/register/${client1.client_id}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(
+            `${client2.client_id}:${client2.client_secret}`,
+          ).toString("base64")}`,
+        },
+        body: JSON.stringify({
+          client_name: "Updated Client",
+          redirect_uris: ["https://client1.example.com/callback"],
+        }),
+      },
+    );
+
+    expect(responseWithWrongId.status).toBe(401);
+    const errorWithWrongId = await responseWithWrongId.json();
+    expect(errorWithWrongId.error).toBe("invalid_client");
+    expect(errorWithWrongId.error_description).toBe("Client ID mismatch");
+  });
+
+  test("PUT /register requires redirect_uris", async () => {
+    // First register a client
+    const registerResponse = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Test Client",
+          redirect_uris: ["https://client.example.com/callback"],
+          scope: "openid offline_access",
+        }),
+      },
+    );
+
+    const client = await registerResponse.json();
+
+    // Attempt update without redirect_uris
+    const response = await auth.request(
+      `https://auth.example.com/register/${client.client_id}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(
+            `${client.client_id}:${client.client_secret}`,
+          ).toString("base64")}`,
+        },
+        body: JSON.stringify({
+          client_name: "Updated Client",
+        }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    const error = await response.json();
+    expect(error.error).toBe("invalid_request");
+  });
+
+  test("DELETE /register deletes client", async () => {
+    // First register a client
+    const registerResponse = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Test Client",
+          redirect_uris: ["https://client.example.com/callback"],
+          scope: "openid offline_access",
+        }),
+      },
+    );
+
+    const client = await registerResponse.json();
+
+    // Delete the client
+    const deleteResponse = await auth.request(
+      `https://auth.example.com/register/${client.client_id}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${client.client_id}:${client.client_secret}`,
+          ).toString("base64")}`,
+        },
+      },
+    );
+
+    expect(deleteResponse.status).toBe(204);
+
+    // Verify client was deleted
+    const stored = await storage.get(["oauth:client", client.client_id]);
+    expect(stored).toBeUndefined();
+
+    // Verify client can't be used anymore - should get 400 directly, not a redirect
+    const authResponse = await auth.request(
+      "https://auth.example.com/authorize?" +
+        new URLSearchParams({
+          response_type: "code",
+          client_id: client.client_id,
+          redirect_uri: "https://client.example.com/callback",
+          provider: "dummy",
+          scope: "openid",
+        }).toString(),
+    );
+    expect(authResponse.status).toBe(400);
+    const error = await authResponse.json();
+    expect(error.error).toBe("invalid_client");
+    expect(error.error_description).toBe(
+      `Client ${client.client_id} not found`,
+    );
+  });
+
+  test("DELETE /register requires valid client_id", async () => {
+    const response = await auth.request(
+      "https://auth.example.com/register/non-existent-client",
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            "non-existent-client:secret",
+          ).toString("base64")}`,
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
+    const error = await response.json();
+    expect(error.error).toBe("invalid_client");
+  });
+
+  test("DELETE /register requires correct client credentials", async () => {
+    // Register first client
+    const client1Response = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Client 1",
+          redirect_uris: ["https://client1.example.com/callback"],
+          scope: "openid",
+        }),
+      },
+    );
+    const client1 = await client1Response.json();
+
+    // Register second client
+    const client2Response = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Client 2",
+          redirect_uris: ["https://client2.example.com/callback"],
+          scope: "openid",
+        }),
+      },
+    );
+    const client2 = await client2Response.json();
+
+    // Try to delete client1 using client2's secret
+    const response = await auth.request(
+      `https://auth.example.com/register/${client1.client_id}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${client1.client_id}:${client2.client_secret}`,
+          ).toString("base64")}`,
+        },
+      },
+    );
+
+    expect(response.status).toBe(401);
+    const error = await response.json();
+    expect(error.error).toBe("invalid_client");
+    expect(error.error_description).toBe("Invalid client credentials");
+
+    // Also verify that using wrong client_id in auth header fails
+    const responseWithWrongId = await auth.request(
+      `https://auth.example.com/register/${client1.client_id}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${client2.client_id}:${client2.client_secret}`,
+          ).toString("base64")}`,
+        },
+      },
+    );
+
+    expect(responseWithWrongId.status).toBe(401);
+    const errorWithWrongId = await responseWithWrongId.json();
+    expect(errorWithWrongId.error).toBe("invalid_client");
+    expect(errorWithWrongId.error_description).toBe("Client ID mismatch");
+
+    // Verify client1 still exists
+    const stored = await storage.get(["oauth:client", client1.client_id]);
+    expect(stored).toBeDefined();
+  });
 });
 
 describe("OIDC Authorization Code Flow", () => {

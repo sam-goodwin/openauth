@@ -20,6 +20,7 @@
 export class OauthError extends Error {
   constructor(
     public error:
+      | "invalid_client"
       | "invalid_request"
       | "invalid_grant"
       | "unauthorized_client"
@@ -28,8 +29,9 @@ export class OauthError extends Error {
       | "server_error"
       | "temporarily_unavailable",
     public description: string,
+    public status = 400,
   ) {
-    super(error + " - " + description)
+    super(error + " - " + description);
   }
 }
 
@@ -41,7 +43,7 @@ export class MissingProviderError extends OauthError {
     super(
       "invalid_request",
       "Must specify `provider` query parameter if `select` callback on issuer is not specified",
-    )
+    );
   }
 }
 
@@ -50,7 +52,7 @@ export class MissingProviderError extends OauthError {
  */
 export class MissingParameterError extends OauthError {
   constructor(public parameter: string) {
-    super("invalid_request", "Missing parameter: " + parameter)
+    super("invalid_request", "Missing parameter: " + parameter);
   }
 }
 
@@ -65,7 +67,7 @@ export class UnauthorizedClientError extends OauthError {
     super(
       "unauthorized_client",
       `Client ${clientID} is not authorized to use this redirect_uri: ${redirectURI}`,
-    )
+    );
   }
 }
 
@@ -79,7 +81,7 @@ export class UnknownStateError extends Error {
   constructor() {
     super(
       "The browser was in an unknown state. This could be because certain cookies expired or the browser was switched in the middle of an authentication flow",
-    )
+    );
   }
 }
 
@@ -88,7 +90,7 @@ export class UnknownStateError extends Error {
  */
 export class InvalidSubjectError extends Error {
   constructor() {
-    super("Invalid subject")
+    super("Invalid subject");
   }
 }
 
@@ -97,7 +99,7 @@ export class InvalidSubjectError extends Error {
  */
 export class InvalidRefreshTokenError extends Error {
   constructor() {
-    super("Invalid refresh token")
+    super("Invalid refresh token");
   }
 }
 
@@ -106,7 +108,7 @@ export class InvalidRefreshTokenError extends Error {
  */
 export class InvalidAccessTokenError extends Error {
   constructor() {
-    super("Invalid access token")
+    super("Invalid access token");
   }
 }
 
@@ -115,6 +117,6 @@ export class InvalidAccessTokenError extends Error {
  */
 export class InvalidAuthorizationCodeError extends Error {
   constructor() {
-    super("Invalid authorization code")
+    super("Invalid authorization code");
   }
 }

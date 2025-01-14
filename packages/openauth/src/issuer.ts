@@ -1274,6 +1274,173 @@ export function issuer<
     },
   );
 
+  // OAuth 2.0 Dynamic Client Registration Management Protocol (RFC 7592)
+  // This endpoint allows OAuth 2.0 clients to update their registration metadata
+  app.put(
+    "/register/:client_id",
+    cors({
+      origin: "*",
+      allowHeaders: ["*"],
+      allowMethods: ["PUT"],
+      credentials: false,
+    }),
+    async (c) => {
+      const clientID = c.req.param("client_id");
+
+      try {
+        const body = await c.req.json();
+
+        // Validate required fields first
+        if (
+          !body.redirect_uris ||
+          !Array.isArray(body.redirect_uris) ||
+          body.redirect_uris.length === 0
+        ) {
+          return c.json(
+            {
+              error: "invalid_request",
+              error_description: "redirect_uris must be a non-empty array",
+            },
+            400 as const,
+          );
+        }
+
+        // Then validate client credentials
+        const existingClient = await validateClientCredentials(c, clientID);
+
+        // Create updated client configuration
+        // Note: client_id and client_secret cannot be updated
+        const updatedClient = {
+          ...existingClient,
+          client_name: body.client_name || existingClient.client_name,
+          redirect_uris: body.redirect_uris,
+          grant_types: body.grant_types || existingClient.grant_types,
+          token_endpoint_auth_method:
+            body.token_endpoint_auth_method ||
+            existingClient.token_endpoint_auth_method,
+          scope: body.scope || existingClient.scope,
+        } satisfies OidcClient;
+
+        // Update client in storage
+        await Storage.set(
+          storage,
+          ["oauth:client", clientID],
+          updatedClient,
+          60 * 60 * 24, // Store for 24 hours
+        );
+
+        // Return updated client metadata
+        // Note: client_secret is not included in the response for security
+        const { client_secret, ...responseData } = updatedClient;
+        return c.json(responseData);
+      } catch (err) {
+        if (err instanceof OauthError) {
+          return c.json(
+            {
+              error: err.error,
+              error_description: err.description,
+            },
+            err.status as 400 | 401 | 404,
+          );
+        }
+        throw err;
+      }
+    },
+  );
+
+  // OAuth 2.0 Dynamic Client Registration Management Protocol (RFC 7592)
+  // This endpoint allows OAuth 2.0 clients to delete their registration
+  app.delete(
+    "/register/:client_id",
+    cors({
+      origin: "*",
+      allowHeaders: ["*"],
+      allowMethods: ["DELETE"],
+      credentials: false,
+    }),
+    async (c) => {
+      const clientID = c.req.param("client_id");
+
+      try {
+        await validateClientCredentials(c, clientID);
+
+        // Delete client from storage
+        await Storage.remove(storage, ["oauth:client", clientID]);
+
+        // Return 204 No Content on successful deletion
+        return new Response(null, { status: 204 });
+      } catch (err) {
+        if (err instanceof OauthError) {
+          return c.json(
+            {
+              error: err.error,
+              error_description: err.description,
+            },
+            err.status as 400 | 401 | 404,
+          );
+        }
+        throw err;
+      }
+    },
+  );
+
+  /**
+   * Validates client credentials using Basic authentication.
+   * Returns the client if authentication is successful, or throws an OauthError if not.
+   *
+   * This is for dynamically registered clients.
+   */
+  async function validateClientCredentials(
+    c: Context,
+    clientID: string,
+  ): Promise<OidcClient> {
+    // Get existing client registration
+    const existingClient = await Storage.get<OidcClient>(storage, [
+      "oauth:client",
+      clientID,
+    ]);
+
+    if (!existingClient) {
+      throw new OauthError("invalid_client", "Client not found", 404);
+    }
+
+    // Verify client authentication using client_secret
+    const authHeader = c.req.header("Authorization");
+    if (!authHeader?.startsWith("Basic ")) {
+      throw new OauthError(
+        "invalid_client",
+        "Missing or invalid Authorization header",
+        401,
+      );
+    }
+
+    try {
+      const credentials = Buffer.from(authHeader.slice(6), "base64").toString();
+      const [id, secret] = credentials.split(":");
+      if (id !== clientID) {
+        throw new OauthError("invalid_client", "Client ID mismatch", 401);
+      }
+
+      const isValid = await hasher.verify(secret, existingClient.client_secret);
+      if (!isValid) {
+        throw new OauthError(
+          "invalid_client",
+          "Invalid client credentials",
+          401,
+        );
+      }
+
+      return existingClient;
+    } catch (err) {
+      if (err instanceof OauthError) throw err;
+      throw new OauthError(
+        "invalid_client",
+        "Invalid Authorization header format",
+        401,
+      );
+    }
+  }
+
   app.get("/authorize", async (c) => {
     const provider = c.req.query("provider");
     const response_type = c.req.query("response_type");
@@ -1325,13 +1492,25 @@ export function issuer<
 
       // The authorization server MUST verify that a client exists with the provided client identifier
       if (!client) {
-        throw new UnauthorizedClientError(client_id, redirect_uri);
+        return c.json(
+          {
+            error: "invalid_client",
+            error_description: `Client ${client_id} not found`,
+          },
+          400,
+        );
       }
 
       // If the request fails due to a missing, invalid, or mismatching redirection URI,
       // the authorization server SHOULD inform the resource owner of the error.
       if (!client.redirect_uris.includes(redirect_uri)) {
-        throw new UnauthorizedClientError(client_id, redirect_uri);
+        return c.json(
+          {
+            error: "unauthorized_client",
+            error_description: `Client ${client_id} is not authorized to use this redirect_uri: ${redirect_uri}`,
+          },
+          400,
+        );
       }
 
       // The Authorization Server MUST verify that the Client is authorized to use the requested scope
@@ -1386,12 +1565,14 @@ export function issuer<
     if (err instanceof UnknownStateError) {
       return auth.forward(c, await error(err, c.req.raw));
     }
-    const authorization = await getAuthorization(c);
-    const url = new URL(authorization.redirect_uri);
     const oauth =
       err instanceof OauthError
         ? err
         : new OauthError("server_error", err.message);
+
+    // For other errors, redirect with error parameters
+    const authorization = await getAuthorization(c);
+    const url = new URL(authorization.redirect_uri);
     url.searchParams.set("error", oauth.error);
     url.searchParams.set("error_description", oauth.description);
     return c.redirect(url.toString());
