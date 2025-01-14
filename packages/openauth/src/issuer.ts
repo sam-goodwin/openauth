@@ -1326,7 +1326,7 @@ export function issuer<
           storage,
           ["oauth:client", clientID],
           updatedClient,
-          60 * 60 * 24, // Store for 24 hours
+          undefined, // Store indefinitely
         );
 
         // Return updated client metadata
