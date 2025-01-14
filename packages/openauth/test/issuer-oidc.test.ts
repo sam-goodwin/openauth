@@ -635,6 +635,100 @@ describe("OIDC Authorization Code Flow", () => {
       expires_in: expect.any(Number),
     });
   });
+
+  test("code flow with Basic Authorization header succeeds", async () => {
+    // First register a client
+    const registerResponse = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Test OIDC Client",
+          redirect_uris: ["https://client.example.com/callback"],
+          scope: "openid offline_access",
+          grant_types: ["authorization_code", "refresh_token"],
+        }),
+      },
+    );
+    const clientCreds = await registerResponse.json();
+
+    const client = createClient({
+      issuer: "https://auth.example.com",
+      clientID: clientCreds.client_id,
+      fetch: (a, b) => Promise.resolve(auth.request(a, b)),
+    });
+
+    // Start auth flow with scope=openid
+    const { challenge, url: baseUrl } = await client.authorize(
+      "https://client.example.com/callback",
+      "code",
+      {
+        pkce: true,
+      },
+    );
+
+    // Add scope parameter to URL
+    const url = new URL(baseUrl);
+    url.searchParams.set("scope", "openid");
+
+    let response = await auth.request(url.toString());
+    expect(response.status).toBe(302);
+    const setCookieHeader = response.headers.get("set-cookie")!;
+    const [cookieValue] = setCookieHeader.split(";");
+    response = await auth.request(response.headers.get("location")!, {
+      headers: {
+        cookie: cookieValue,
+      },
+    });
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("location")!);
+    const code = location.searchParams.get("code");
+    expect(code).not.toBeNull();
+
+    // Exchange code for tokens using Basic Authorization header
+    const exchangeResponse = await auth.request(
+      "https://auth.example.com/token",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${clientCreds.client_id}:${clientCreds.client_secret}`,
+          ).toString("base64")}`,
+        },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code!,
+          redirect_uri: "https://client.example.com/callback",
+          code_verifier: challenge.verifier,
+        } as Record<string, string>).toString(),
+      },
+    );
+
+    expect(exchangeResponse.status).toBe(200);
+    const tokens = await exchangeResponse.json();
+
+    // Verify id_token claims
+    const idToken = decodeJwt(tokens.id_token);
+    expect(idToken).toMatchObject({
+      iss: "https://auth.example.com",
+      sub: expect.any(String),
+      aud: clientCreds.client_id,
+      exp: expect.any(Number),
+      iat: expect.any(Number),
+    });
+
+    expect(tokens).toMatchObject({
+      access_token: expectNonEmptyString,
+      refresh_token: expectNonEmptyString,
+      id_token: expectNonEmptyString,
+      token_type: "Bearer",
+      expires_in: expect.any(Number),
+    });
+  });
 });
 
 describe("UserInfo Endpoint", () => {

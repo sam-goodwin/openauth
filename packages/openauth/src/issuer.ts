@@ -549,6 +549,7 @@ export function issuer<
               await auth.unset(ctx, "authorization");
               return ctx.redirect(location.toString(), 302);
             }
+
             if (authorization.response_type === "code") {
               const code = crypto.randomUUID();
               await Storage.set(
@@ -943,6 +944,7 @@ export function issuer<
           clientID = form.get("client_id")?.toString();
           clientSecret = form.get("client_secret")?.toString();
         }
+
         // Verify client credentials if provided
         if (clientID && clientSecret) {
           // if both of these exist, we are assuming this is an OIDC client
@@ -1019,7 +1021,7 @@ export function issuer<
             400,
           );
         }
-        if (payload.clientID !== form.get("client_id")) {
+        if (payload.clientID !== clientID) {
           return c.json(
             {
               error: "unauthorized_client",
@@ -1261,7 +1263,7 @@ export function issuer<
         ["oauth:client", clientID],
         client,
         // TODO(sam): should this follow the same ttl as the access token? or have its own?
-        60 * 60 * 24, // Store for 24 hours
+        undefined,
       );
 
       // The authorization server's response MUST include the client identifier,
