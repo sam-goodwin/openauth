@@ -729,6 +729,109 @@ describe("OIDC Authorization Code Flow", () => {
       expires_in: expect.any(Number),
     });
   });
+
+  test("code flow with invalid client_secret is rejected", async () => {
+    // First register a client
+    const registerResponse = await auth.request(
+      "https://auth.example.com/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: "Test OIDC Client",
+          redirect_uris: ["https://client.example.com/callback"],
+          scope: "openid offline_access",
+          grant_types: ["authorization_code", "refresh_token"],
+        }),
+      },
+    );
+    const clientCreds = await registerResponse.json();
+
+    const client = createClient({
+      issuer: "https://auth.example.com",
+      clientID: clientCreds.client_id,
+      fetch: (a, b) => Promise.resolve(auth.request(a, b)),
+    });
+
+    // Start auth flow with scope=openid
+    const { challenge, url: baseUrl } = await client.authorize(
+      "https://client.example.com/callback",
+      "code",
+      {
+        pkce: true,
+      },
+    );
+
+    // Add scope parameter to URL
+    const url = new URL(baseUrl);
+    url.searchParams.set("scope", "openid");
+
+    let response = await auth.request(url.toString());
+    expect(response.status).toBe(302);
+    const setCookieHeader = response.headers.get("set-cookie")!;
+    const [cookieValue] = setCookieHeader.split(";");
+    response = await auth.request(response.headers.get("location")!, {
+      headers: {
+        cookie: cookieValue,
+      },
+    });
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("location")!);
+    const code = location.searchParams.get("code");
+    expect(code).not.toBeNull();
+
+    // Try to exchange code with invalid client_secret in body
+    let exchangeResponse = await auth.request(
+      "https://auth.example.com/token",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code!,
+          redirect_uri: "https://client.example.com/callback",
+          client_id: clientCreds.client_id,
+          client_secret: "invalid_secret",
+          code_verifier: challenge.verifier,
+        } as Record<string, string>).toString(),
+      },
+    );
+
+    expect(exchangeResponse.status).toBe(401);
+    let error = await exchangeResponse.json();
+    expect(error).toMatchObject({
+      error: "invalid_client",
+      error_description: "Invalid client credentials",
+    });
+
+    // Try to exchange code with invalid client_secret in Authorization header
+    exchangeResponse = await auth.request("https://auth.example.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(
+          `${clientCreds.client_id}:invalid_secret`,
+        ).toString("base64")}`,
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code!,
+        redirect_uri: "https://client.example.com/callback",
+        code_verifier: challenge.verifier,
+      } as Record<string, string>).toString(),
+    });
+
+    expect(exchangeResponse.status).toBe(401);
+    error = await exchangeResponse.json();
+    expect(error).toMatchObject({
+      error: "invalid_client",
+      error_description: "Invalid client credentials",
+    });
+  });
 });
 
 describe("UserInfo Endpoint", () => {
