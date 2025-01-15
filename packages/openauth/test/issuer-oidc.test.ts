@@ -22,6 +22,9 @@ const subjects = createSubjects({
 
 const storage = MemoryStorage();
 const issuerConfig = {
+  oidc: {
+    rootClientSecret: "root-secret",
+  },
   storage,
   subjects,
   allow: async () => true,
@@ -94,7 +97,7 @@ describe("OpenID Connect Discovery", () => {
       ],
       scopes_supported: ["openid", "offline_access"],
       claims_supported: ["sub", "iss", "aud", "exp", "iat"],
-      registration_endpoint: "https://auth.example.com/register",
+      registration_endpoint: "https://auth.example.com/client",
       grant_types_supported: ["authorization_code", "refresh_token"],
       userinfo_endpoint: "https://auth.example.com/userinfo",
     });
@@ -102,7 +105,7 @@ describe("OpenID Connect Discovery", () => {
 });
 
 describe("Dynamic Client Registration", () => {
-  test("POST /register returns client credentials", async () => {
+  test("POST /client returns client credentials", async () => {
     const body = {
       client_name: "Test Client",
       redirect_uris: ["https://client.example.com/callback"],
@@ -110,10 +113,11 @@ describe("Dynamic Client Registration", () => {
       grant_types: ["authorization_code", "refresh_token"],
     };
 
-    const response = await auth.request("https://auth.example.com/register", {
+    const response = await auth.request("https://auth.example.com/client", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: "Bearer root-secret",
       },
       body: JSON.stringify(body),
     });
@@ -138,16 +142,17 @@ describe("Dynamic Client Registration", () => {
     });
   });
 
-  test("POST /register requires redirect_uris", async () => {
+  test("POST /client requires redirect_uris", async () => {
     const body = {
       client_name: "Test Client",
       scope: "openid offline_access",
     };
 
-    const response = await auth.request("https://auth.example.com/register", {
+    const response = await auth.request("https://auth.example.com/client", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: "Bearer root-secret",
       },
       body: JSON.stringify(body),
     });
@@ -157,14 +162,15 @@ describe("Dynamic Client Registration", () => {
     expect(json.error).toBe("invalid_request");
   });
 
-  test("PUT /register updates client metadata", async () => {
+  test("PUT /client updates client metadata", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Original Client Name",
@@ -199,7 +205,7 @@ describe("Dynamic Client Registration", () => {
     };
 
     const updateResponse = await auth.request(
-      `https://auth.example.com/register/${client.client_id}`,
+      `https://auth.example.com/client/${client.client_id}`,
       {
         method: "PUT",
         headers: {
@@ -247,13 +253,14 @@ describe("Dynamic Client Registration", () => {
     expect(authResponse.status).toBe(302);
   });
 
-  test("PUT /register requires valid client_id", async () => {
+  test("PUT /client requires valid client_id", async () => {
     const response = await auth.request(
-      "https://auth.example.com/register/non-existent-client",
+      "https://auth.example.com/client/non-existent-client",
       {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Updated Client",
@@ -267,14 +274,15 @@ describe("Dynamic Client Registration", () => {
     expect(error.error).toBe("invalid_client");
   });
 
-  test("PUT /register requires correct client credentials", async () => {
+  test("PUT /client requires correct client credentials", async () => {
     // Register first client
     const client1Response = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Client 1",
@@ -287,11 +295,12 @@ describe("Dynamic Client Registration", () => {
 
     // Register second client
     const client2Response = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Client 2",
@@ -304,7 +313,7 @@ describe("Dynamic Client Registration", () => {
 
     // Try to update client1 using client2's secret
     const response = await auth.request(
-      `https://auth.example.com/register/${client1.client_id}`,
+      `https://auth.example.com/client/${client1.client_id}`,
       {
         method: "PUT",
         headers: {
@@ -327,7 +336,7 @@ describe("Dynamic Client Registration", () => {
 
     // Also verify that using wrong client_id in auth header fails
     const responseWithWrongId = await auth.request(
-      `https://auth.example.com/register/${client1.client_id}`,
+      `https://auth.example.com/client/${client1.client_id}`,
       {
         method: "PUT",
         headers: {
@@ -349,14 +358,15 @@ describe("Dynamic Client Registration", () => {
     expect(errorWithWrongId.error_description).toBe("Client ID mismatch");
   });
 
-  test("PUT /register requires redirect_uris", async () => {
+  test("PUT /client requires redirect_uris", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test Client",
@@ -370,7 +380,7 @@ describe("Dynamic Client Registration", () => {
 
     // Attempt update without redirect_uris
     const response = await auth.request(
-      `https://auth.example.com/register/${client.client_id}`,
+      `https://auth.example.com/client/${client.client_id}`,
       {
         method: "PUT",
         headers: {
@@ -390,14 +400,15 @@ describe("Dynamic Client Registration", () => {
     expect(error.error).toBe("invalid_request");
   });
 
-  test("DELETE /register deletes client", async () => {
+  test("DELETE /client deletes client", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test Client",
@@ -411,7 +422,7 @@ describe("Dynamic Client Registration", () => {
 
     // Delete the client
     const deleteResponse = await auth.request(
-      `https://auth.example.com/register/${client.client_id}`,
+      `https://auth.example.com/client/${client.client_id}`,
       {
         method: "DELETE",
         headers: {
@@ -447,9 +458,9 @@ describe("Dynamic Client Registration", () => {
     );
   });
 
-  test("DELETE /register requires valid client_id", async () => {
+  test("DELETE /client requires valid client_id", async () => {
     const response = await auth.request(
-      "https://auth.example.com/register/non-existent-client",
+      "https://auth.example.com/client/non-existent-client",
       {
         method: "DELETE",
         headers: {
@@ -465,14 +476,15 @@ describe("Dynamic Client Registration", () => {
     expect(error.error).toBe("invalid_client");
   });
 
-  test("DELETE /register requires correct client credentials", async () => {
+  test("DELETE /client requires correct client credentials", async () => {
     // Register first client
     const client1Response = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Client 1",
@@ -485,11 +497,12 @@ describe("Dynamic Client Registration", () => {
 
     // Register second client
     const client2Response = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Client 2",
@@ -502,7 +515,7 @@ describe("Dynamic Client Registration", () => {
 
     // Try to delete client1 using client2's secret
     const response = await auth.request(
-      `https://auth.example.com/register/${client1.client_id}`,
+      `https://auth.example.com/client/${client1.client_id}`,
       {
         method: "DELETE",
         headers: {
@@ -520,7 +533,7 @@ describe("Dynamic Client Registration", () => {
 
     // Also verify that using wrong client_id in auth header fails
     const responseWithWrongId = await auth.request(
-      `https://auth.example.com/register/${client1.client_id}`,
+      `https://auth.example.com/client/${client1.client_id}`,
       {
         method: "DELETE",
         headers: {
@@ -546,11 +559,12 @@ describe("OIDC Authorization Code Flow", () => {
   test("code flow with scope=openid returns id_token", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test OIDC Client",
@@ -602,6 +616,9 @@ describe("OIDC Authorization Code Flow", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${clientCreds.client_id}:${clientCreds.client_secret}`,
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "authorization_code",
@@ -639,11 +656,12 @@ describe("OIDC Authorization Code Flow", () => {
   test("code flow with Basic Authorization header succeeds", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test OIDC Client",
@@ -733,11 +751,12 @@ describe("OIDC Authorization Code Flow", () => {
   test("code flow with invalid client_secret is rejected", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test OIDC Client",
@@ -789,6 +808,9 @@ describe("OIDC Authorization Code Flow", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${clientCreds.client_id}:invalid_secret`,
+          ).toString("base64")}`,
         },
         body: new URLSearchParams({
           grant_type: "authorization_code",
@@ -838,11 +860,12 @@ describe("UserInfo Endpoint", () => {
   test("GET /userinfo returns user claims with valid access token", async () => {
     // First register a client
     const registerResponse = await auth.request(
-      "https://auth.example.com/register",
+      "https://auth.example.com/client",
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: "Bearer root-secret",
         },
         body: JSON.stringify({
           client_name: "Test OIDC Client",
@@ -889,6 +912,9 @@ describe("UserInfo Endpoint", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(
+          `${clientCreds.client_id}:${clientCreds.client_secret}`,
+        ).toString("base64")}`,
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",

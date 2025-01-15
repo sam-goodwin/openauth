@@ -219,7 +219,7 @@ export interface IssuerInput<
   }[keyof Providers],
 > {
   /**
-   * If using OIDC, specify a rootClientSecret which is the client secret required to call `POST /register`.
+   * If using OIDC, specify a rootClientSecret which is the client secret required to call `POST /client`.
    */
   oidc?: {
     rootClientSecret: string;
@@ -875,7 +875,7 @@ export function issuer<
           // "at_hash",
         ],
         // OPTIONAL. URL of the authorization server's OAuth 2.0 Dynamic Client Registration endpoint
-        registration_endpoint: `${iss}/register`,
+        registration_endpoint: `${iss}/client`,
         // OPTIONAL. JSON array containing a list of the OAuth 2.0 Grant Type values that this OP supports
         grant_types_supported: [
           "authorization_code",
@@ -1214,7 +1214,7 @@ export function issuer<
   // This endpoint allows OAuth 2.0 clients to register with the authorization server,
   // providing client metadata parameters and receiving client credentials.
   app.post(
-    "/register",
+    "/client",
     cors({
       origin: "*",
       allowHeaders: ["*"],
@@ -1327,7 +1327,7 @@ export function issuer<
   // OAuth 2.0 Dynamic Client Registration Management Protocol (RFC 7592)
   // This endpoint allows OAuth 2.0 clients to update their registration metadata
   app.put(
-    "/register/:client_id",
+    "/client/:client_id",
     cors({
       origin: "*",
       allowHeaders: ["*"],
@@ -1405,7 +1405,7 @@ export function issuer<
   // OAuth 2.0 Dynamic Client Registration Management Protocol (RFC 7592)
   // This endpoint allows OAuth 2.0 clients to delete their registration
   app.delete(
-    "/register/:client_id",
+    "/client/:client_id",
     cors({
       origin: "*",
       allowHeaders: ["*"],
