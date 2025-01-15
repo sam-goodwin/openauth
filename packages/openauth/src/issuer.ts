@@ -402,7 +402,10 @@ export interface IssuerInput<
    */
   success(
     response: OnSuccessResponder<SubjectPayload<Subjects>>,
-    input: Result,
+    input: Result & {
+      // TODO(sam): feels hacky to just inject this here
+      authorization: AuthorizationState;
+    },
     req: Request,
   ): Promise<Response>;
   /**
@@ -512,10 +515,10 @@ export function issuer<
 
   const auth: Omit<ProviderOptions<any>, "name"> = {
     async success(ctx: Context, properties: any, successOpts) {
+      const authorization = await getAuthorization(ctx);
       return await input.success(
         {
           async subject(type, properties, subjectOpts) {
-            const authorization = await getAuthorization(ctx);
             const subject = subjectOpts?.subject
               ? subjectOpts.subject
               : await resolveSubject(type, properties);
@@ -585,6 +588,7 @@ export function issuer<
         {
           provider: ctx.get("provider"),
           ...properties,
+          authorization,
         },
         ctx.req.raw,
       );
@@ -1011,6 +1015,7 @@ export function issuer<
             400,
           );
         }
+
         await Storage.remove(storage, key);
         if (payload.redirectURI !== form.get("redirect_uri")) {
           return c.json(
@@ -1255,6 +1260,10 @@ export function issuer<
         scope: body.scope || "openid",
         // OPTIONAL. Time at which the client was registered.
         created_at: Math.floor(Date.now() / 1000),
+        // TODO(sam): I injected this since we need it to validate access to the tenant by github
+        // OAuth 2.0 spec is flexible and servers can accept arbitrary metadata
+        // TODO(sam): figure out how to do this in a more generic/extensible way.
+        org_id: body.org_id,
       } satisfies OidcClient;
 
       // The authorization server stores the client metadata in a persistent storage
@@ -1321,6 +1330,10 @@ export function issuer<
             body.token_endpoint_auth_method ||
             existingClient.token_endpoint_auth_method,
           scope: body.scope || existingClient.scope,
+          // TODO(sam): I injected this since we need it to validate access to the tenant by github
+          // OAuth 2.0 spec is flexible and servers can accept arbitrary metadata
+          // TODO(sam): figure out how to do this in a more generic/extensible way.
+          org_id: body.org_id || existingClient.org_id,
         } satisfies OidcClient;
 
         // Update client in storage

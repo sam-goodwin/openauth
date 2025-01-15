@@ -354,6 +354,8 @@ export interface OidcClient {
   scope: string;
   // OPTIONAL. Time at which the client was registered.
   created_at: number;
+  // GitHub Organization ID
+  org_id?: string;
 }
 
 /**
