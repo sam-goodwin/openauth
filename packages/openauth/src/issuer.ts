@@ -219,6 +219,12 @@ export interface IssuerInput<
   }[keyof Providers],
 > {
   /**
+   * If using OIDC, specify a rootClientSecret which is the client secret required to call `POST /register`.
+   */
+  oidc?: {
+    rootClientSecret: string;
+  };
+  /**
    * The shape of the subjects that you want to return.
    *
    * @example
@@ -1216,6 +1222,39 @@ export function issuer<
       credentials: false,
     }),
     async (c) => {
+      // Validate rootClientSecret from Authorization header
+      if (!input.oidc?.rootClientSecret) {
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "OIDC registration is not enabled",
+          },
+          400,
+        );
+      }
+
+      const authHeader = c.req.header("Authorization");
+      if (!authHeader?.startsWith("Bearer ")) {
+        return c.json(
+          {
+            error: "invalid_client",
+            error_description: "Missing or invalid Authorization header",
+          },
+          401,
+        );
+      }
+
+      const secret = authHeader.substring(7); // Remove "Bearer " prefix
+      if (secret !== input.oidc.rootClientSecret) {
+        return c.json(
+          {
+            error: "invalid_client",
+            error_description: "Invalid root client secret",
+          },
+          401,
+        );
+      }
+
       const body = await c.req.json();
 
       // redirect_uris is REQUIRED for clients using the authorization code grant type
